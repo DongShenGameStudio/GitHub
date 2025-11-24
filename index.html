@@ -189,7 +189,7 @@ button:hover{opacity:.8}
 <div id="uploadModal" class="modal" style="display:none">
   <div class="modal-content upload-modal">
     <div class="modal-header">
-      <div class="modal-title">上传文件到仓库</div>
+      <div class="modal-title" id="uploadModalTitle">上传文件到仓库</div>
       <button class="modal-close" onclick="hideUploadModal()">×</button>
     </div>
     <div id="uploadArea" class="upload-area">
@@ -542,7 +542,7 @@ async function checkSecret(){
 }
 
 async function saveSecret(){
-  const s = prompt('输入“东神开放平台”密钥'); 
+  const s = prompt('输入"东神开放平台"密钥'); 
   if(!s) return;
   
   if(!/^(ghp_|github_pat_[a-zA-Z0-9_]{36,251})$/.test(s))   
@@ -898,6 +898,9 @@ function showUploadModal() {
     return;
   }
   
+  // 更新模态框标题，显示当前仓库
+  document.getElementById('uploadModalTitle').textContent = '上传文件到仓库: ' + currentRepo;
+  
   // 重置状态
   selectedFiles = [];
   document.getElementById('fileList').innerHTML = '';
@@ -1000,58 +1003,98 @@ async function uploadFiles() {
   const basePath = document.getElementById('uploadPath').value.trim();
   
   try {
+    let successCount = 0;
+    let errorCount = 0;
+    
     // 上传每个文件
     for (const file of selectedFiles) {
-      const reader = new FileReader();
-      
-      await new Promise((resolve, reject) => {
-        reader.onload = async function(e) {
-          try {
-            // 获取文件内容（base64）
-            const content = e.target.result.split(',')[1]; // 去掉data:...前缀
-            
-            // 确定文件路径
-            let filePath = file.name;
-            if (basePath) {
-              // 如果指定了基础路径，使用基础路径+文件名
-              filePath = basePath.endsWith('/') ? basePath + file.name : basePath + '/' + file.name;
-            }
-            
-            // 调用GitHub API上传文件
-            const result = await apiCall(
-              `https://api.github.com/repos/${currentRepo}/contents/${filePath}`,
-              'PUT',
-              {
-                message: `Upload ${file.name}`,
-                content: content
+      try {
+        const reader = new FileReader();
+        
+        await new Promise((resolve, reject) => {
+          reader.onload = async function(e) {
+            try {
+              // 获取文件内容（base64）
+              const content = e.target.result.split(',')[1]; // 去掉data:...前缀
+              
+              // 确定文件路径
+              let filePath = file.name;
+              if (basePath) {
+                // 如果指定了基础路径，使用基础路径+文件名
+                filePath = basePath.endsWith('/') ? basePath + file.name : basePath + '/' + file.name;
               }
-            );
-            
-            if (result) {
-              await log('upload-file', currentRepo, filePath, `上传文件: ${file.name} (${formatFileSize(file.size)})`);
-              console.log(`文件 ${file.name} 上传成功`);
-            } else {
-              reject(new Error(`上传文件 ${file.name} 失败`));
+              
+              // 检查文件是否已存在
+              const existingFile = await apiCall(`https://api.github.com/repos/${currentRepo}/contents/${filePath}`);
+              let sha = null;
+              if (existingFile && existingFile.sha) {
+                sha = existingFile.sha;
+              }
+              
+              // 调用GitHub API上传文件
+              const result = await apiCall(
+                `https://api.github.com/repos/${currentRepo}/contents/${filePath}`,
+                'PUT',
+                {
+                  message: `Upload ${file.name}`,
+                  content: content,
+                  sha: sha // 如果文件已存在，需要提供sha来更新
+                }
+              );
+              
+              if (result) {
+                await log('upload-file', currentRepo, filePath, `上传文件: ${file.name} (${formatFileSize(file.size)})`);
+                console.log(`文件 ${file.name} 上传成功`);
+                successCount++;
+              } else {
+                console.error(`上传文件 ${file.name} 失败`);
+                errorCount++;
+              }
+              
+              resolve();
+            } catch (error) {
+              console.error(`上传文件 ${file.name} 时出错:`, error);
+              errorCount++;
+              reject(error);
             }
-            
-            resolve();
-          } catch (error) {
-            reject(error);
-          }
-        };
-        
-        reader.onerror = function() {
-          reject(new Error('读取文件失败'));
-        };
-        
-        reader.readAsDataURL(file);
-      });
+          };
+          
+          reader.onerror = function() {
+            console.error(`读取文件 ${file.name} 失败`);
+            errorCount++;
+            reject(new Error('读取文件失败'));
+          };
+          
+          reader.readAsDataURL(file);
+        });
+      } catch (error) {
+        console.error(`处理文件 ${file.name} 时出错:`, error);
+        errorCount++;
+      }
     }
     
-    alert(`成功上传 ${selectedFiles.length} 个文件`);
+    let message = '';
+    if (successCount > 0 && errorCount === 0) {
+      message = `成功上传 ${successCount} 个文件`;
+    } else if (successCount > 0 && errorCount > 0) {
+      message = `成功上传 ${successCount} 个文件，失败 ${errorCount} 个文件`;
+    } else {
+      message = `上传失败，所有 ${errorCount} 个文件都未能上传`;
+    }
+    
+    alert(message);
     hideUploadModal();
+    
     // 刷新仓库文件列表
-    location.reload();
+    if (successCount > 0) {
+      // 重新加载当前仓库的文件列表
+      const currentRepoElement = Array.from(document.querySelectorAll('.item.repo')).find(el => el.textContent === currentRepo);
+      if (currentRepoElement) {
+        // 获取默认分支（这里简化处理，实际应该保存分支信息）
+        const branch = 'main'; // 默认分支，实际应该从仓库信息中获取
+        await toggleRepo(currentRepo, branch);
+      }
+    }
   } catch (error) {
     console.error('上传文件失败:', error);
     alert('上传文件失败: ' + error.message);
